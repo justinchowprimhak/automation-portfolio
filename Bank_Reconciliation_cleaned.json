@@ -1,0 +1,983 @@
+{
+  "name": "Bank Reconciliation",
+  "nodes": [
+    {
+      "parameters": {},
+      "type": "n8n-nodes-base.merge",
+      "typeVersion": 3.2,
+      "position": [
+        2944,
+        48
+      ],
+      "id": "55732adf-e4c4-4695-8719-875051331ee3",
+      "name": "Merge"
+    },
+    {
+      "parameters": {
+        "jsCode": "// Get the AI's response\nconst aiResponse = $input.first().json;\n\nconsole.log('Raw AI response type:', typeof aiResponse.output);\n\nlet transactions = [];\n\n// The output is a JSON string that needs parsing\nif (aiResponse.output) {\n  const output = aiResponse.output;\n  \n  if (typeof output === 'string') {\n    // Parse the JSON string\n    try {\n      const parsed = JSON.parse(output);\n      console.log('Parsed output:', parsed);\n      \n      // Extract transactions array\n      if (Array.isArray(parsed)) {\n        transactions = parsed;\n      } else if (parsed.transactions && Array.isArray(parsed.transactions)) {\n        transactions = parsed.transactions;\n      } else {\n        throw new Error('No transactions array found in parsed output');\n      }\n    } catch (e) {\n      throw new Error('Failed to parse AI output: ' + e.message + '\\nOutput: ' + output.substring(0, 200));\n    }\n  } else if (Array.isArray(output)) {\n    transactions = output;\n  } else if (output.transactions) {\n    transactions = output.transactions;\n  }\n} else {\n  throw new Error('No output field in AI response');\n}\n\n// Validate\nif (!Array.isArray(transactions) || transactions.length === 0) {\n  throw new Error('No valid transactions found');\n}\n\nconsole.log('✅ Successfully extracted', transactions.length, 'transactions');\n\n// Add metadata\nconst fileName = $('1_Watch_For_PDF_Upload').item.json.name || 'unknown.pdf';\n\nconst enrichedTransactions = transactions.map((txn, index) => ({\n  transaction_id: txn.transaction_id || `PDF-${index + 1}`,\n  transaction_date: txn.transaction_date,\n  description_raw: txn.description_raw,\n  description_cleaned: txn.description_cleaned || txn.description_raw,\n  extracted_entity: txn.extracted_entity || '',\n  amount: parseFloat(txn.amount),\n  amount_abs: parseFloat(txn.amount_abs || Math.abs(txn.amount)),\n  currency: txn.currency || 'EUR',\n  category: txn.category || 'OTHER',\n  source_file: fileName,\n  bank_format: 'AI_EXTRACTED'\n}));\n\n// Return in format expected by Split Transactions node\nreturn {\n  json: {\n    bank_format: 'AI_EXTRACTED',\n    transactions_count: enrichedTransactions.length,\n    transactions: enrichedTransactions,\n    raw_text_preview: $('4_Parse_OCR_Text').item.json.fullText.substring(0, 500) + '...'\n  }\n};"
+      },
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        2560,
+        192
+      ],
+      "id": "8d0dddfc-d68e-4b8b-ad9b-6605b39cce34",
+      "name": "Code in JavaScript1"
+    },
+    {
+      "parameters": {
+        "jsonSchemaExample": "{\n  \"type\": \"array\",\n  \"items\": {\n    \"type\": \"object\",\n    \"properties\": {\n      \"transaction_id\": { \"type\": \"string\" },\n      \"transaction_date\": { \"type\": \"string\" },\n      \"description_raw\": { \"type\": \"string\" },\n      \"description_cleaned\": { \"type\": \"string\" },\n      \"extracted_entity\": { \"type\": \"string\" },\n      \"amount\": { \"type\": \"number\" },\n      \"amount_abs\": { \"type\": \"number\" },\n      \"currency\": { \"type\": \"string\" },\n      \"category\": { \"type\": \"string\" }\n    },\n    \"required\": [\"transaction_id\", \"transaction_date\", \"description_raw\", \"amount\", \"currency\"]\n  }\n}"
+      },
+      "type": "@n8n/n8n-nodes-langchain.outputParserStructured",
+      "typeVersion": 1.3,
+      "position": [
+        2400,
+        368
+      ],
+      "id": "cff2b5e8-5d7e-404e-b587-fb14c532a4ab",
+      "name": "Structured Output Parser"
+    },
+    {
+      "parameters": {
+        "model": {
+          "__rl": true,
+          "value": "gpt-4o-mini",
+          "mode": "list",
+          "cachedResultName": "gpt-4o-mini"
+        },
+        "options": {
+          "temperature": 0,
+          "timeout": 60000
+        }
+      },
+      "type": "@n8n/n8n-nodes-langchain.lmChatOpenAi",
+      "typeVersion": 1.2,
+      "position": [
+        2208,
+        368
+      ],
+      "id": "a50077f9-c229-43dc-bc68-6397f7ca5c75",
+      "name": "OpenAI Chat Model",
+      "credentials": {
+        "openAiApi": {
+          "id": "0J7bcq4sg2rjYwNM",
+          "name": "OpenAi account"
+        }
+      }
+    },
+    {
+      "parameters": {
+        "promptType": "define",
+        "text": "=Extract ALL transactions from this Italian bank statement text:\n\n{{ $('4_Parse_OCR_Text').item.json.fullText }}",
+        "options": {
+          "systemMessage": "=You are a bank statement transaction extractor. Extract ALL transactions from this Italian bank statement.\n\nFor each transaction, provide:\n- transaction_date (format: YYYY-MM-DD)\n- description_raw (the original description)\n- description_cleaned (cleaned up, remove codes/references)\n- extracted_entity (the company/person name)\n- amount (as a number, negative for outgoing, positive for incoming)\n- amount_abs (absolute value)\n- currency (EUR)\n- category (SUPPLIER_PAYMENT, CUSTOMER_PAYMENT, FEE, or OTHER)\n\nReturn ONLY valid JSON in this exact format:\n{\n  \"transactions\": [\n    {\n      \"transaction_id\": \"PDF-1\",\n      \"transaction_date\": \"2025-01-03\",\n      \"description_raw\": \"BONIFICO DA CLIENTE - MARIO ROSSI\",\n      \"description_cleaned\": \"CLIENTE MARIO ROSSI\",\n      \"extracted_entity\": \"MARIO ROSSI\",\n      \"amount\": 1250.00,\n      \"amount_abs\": 1250.00,\n      \"currency\": \"EUR\",\n      \"category\": \"CUSTOMER_PAYMENT\"\n    }\n  ]\n}\n\nBank statement text:\n{{ $json.fullText }}"
+        }
+      },
+      "type": "@n8n/n8n-nodes-langchain.agent",
+      "typeVersion": 2.2,
+      "position": [
+        2208,
+        192
+      ],
+      "id": "c4fe9068-da8f-4994-85f3-cfabe7628f17",
+      "name": "AI Agent"
+    },
+    {
+      "parameters": {
+        "jsCode": "// Get the binary data using n8n's helper method\nconst binaryPropertyName = 'data';\n\n// Use n8n's built-in helper to get the binary data buffer\nconst binaryData = await this.helpers.getBinaryDataBuffer(0, binaryPropertyName);\n\n// Convert buffer to base64\nconst base64Content = binaryData.toString('base64');\n\nconsole.log('Base64 content length:', base64Content.length);\nconsole.log('First 50 chars:', base64Content.substring(0, 50));\n\n// Format for Google Vision API\nreturn [{\n  json: {\n    requests: [{\n      inputConfig: {\n        content: base64Content,\n        mimeType: 'application/pdf'\n      },\n      features: [{\n        type: 'DOCUMENT_TEXT_DETECTION'\n      }],\n      pages: [1]\n    }]\n  }\n}];"
+      },
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        1648,
+        192
+      ],
+      "id": "710f4ad6-585d-496c-9c33-96e3f0da856c",
+      "name": "Code in JavaScript"
+    },
+    {
+      "parameters": {
+        "method": "POST",
+        "url": "=https://vision.googleapis.com/v1/files:annotate?key={GOOGLE_VISION_API_KEY}",
+        "sendBody": true,
+        "specifyBody": "json",
+        "jsonBody": "={{ $json }}",
+        "options": {}
+      },
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.2,
+      "position": [
+        1840,
+        192
+      ],
+      "id": "be2535af-266f-44a7-b784-e4eb28a250c7",
+      "name": "HTTP Request"
+    },
+    {
+      "parameters": {
+        "subject": "=✅ Bank Reconciliation Complete - {{ $now.toFormat('dd/MM/yyyy') }}",
+        "message": "=Bank Statement Processed <br> <br> File: {{ $('1_Watch_For_PDF_Upload').item.json.name }} <br> <br> transactions Found: <br> <br> Matched (Auto): {{ $('8_Match_To_Invoices').all().filter(item => item.json.status === 'MATCHED').length }} <br> Need Review: {{ $('8_Match_To_Invoices').all().filter(item => item.json.status === 'REVIEW_NEEDED').length }}<<br> Unmatched: {{ $('8_Match_To_Invoices').all().filter(item => item.json.status === 'UNMATCHED').length }}<br> <br> Review details in Google Sheets:\\nhttps://docs.google.com/spreadsheets/d/{SHEETS_DOCUMENT_ID} <br> <br> Processed at: {{ $now.toFormat('HH:mm:ss') }}",
+        "options": {}
+      },
+      "name": "13_Send_Summary_Email",
+      "type": "n8n-nodes-base.gmail",
+      "typeVersion": 2,
+      "position": [
+        4192,
+        64
+      ],
+      "id": "f2bed807-87b3-490d-a3b0-800235b3d385",
+      "webhookId": "ab6aba48-eade-4fb2-a10a-302a9f412359",
+      "executeOnce": true,
+      "credentials": {
+        "gmailOAuth2": {
+          "id": "Byr3nUCTqdOsErTv",
+          "name": "Gmail account"
+        }
+      },
+      "notes": "Email summary of reconciliation results"
+    },
+    {
+      "parameters": {
+        "operation": "move",
+        "fileId": {
+          "__rl": true,
+          "value": "={{ $('1_Watch_For_PDF_Upload').item.json.id }}",
+          "mode": "id"
+        },
+        "driveId": {
+          "__rl": true,
+          "mode": "list",
+          "value": "My Drive"
+        },
+        "folderId": {
+          "__rl": true,
+          "value": "",
+          "mode": "id"
+        }
+      },
+      "name": "12_Archive_PDF",
+      "type": "n8n-nodes-base.googleDrive",
+      "typeVersion": 3,
+      "position": [
+        3984,
+        64
+      ],
+      "id": "8cd2fdb1-c79a-4acb-b8cd-06bdca302d40",
+      "credentials": {
+        "googleDriveOAuth2Api": {
+          "id": "EBWQKCdB4QPURN5P",
+          "name": "Justin's Google Drive"
+        }
+      },
+      "notes": "Move PDF to Processed folder with timestamp"
+    },
+    {
+      "parameters": {
+        "operation": "update",
+        "documentId": {
+          "__rl": true,
+          "mode": "list",
+          "value": ""
+        },
+        "sheetName": {
+          "__rl": true,
+          "value": "gid=0",
+          "mode": "list",
+          "cachedResultName": "Transactions",
+          "cachedResultUrl": "https://docs.google.com/spreadsheets/d/{SHEETS_DOCUMENT_ID}/edit#gid=0"
+        },
+        "columns": {
+          "mappingMode": "defineBelow",
+          "value": {
+            "Invoice_Number": "={{ $json.Matched_Invoice_Number }}",
+            "Payment_ Status": "PAID",
+            "Payment_Date": "={{ $json.Transaction_Date }}",
+            "Payment_Amount": "={{ $json.Amount }}",
+            "Bank_Reference": "={{ $json.Desription_Raw }}",
+            "Reconciliation_Confidence": "={{ $json.Match_Confidence }}",
+            "Reconciliation_Notes": "Auto-matched from PDF statement"
+          },
+          "matchingColumns": [
+            "Invoice_Number"
+          ],
+          "schema": [
+            {
+              "id": "ID",
+              "displayName": "ID",
+              "required": false,
+              "defaultMatch": false,
+              "display": true,
+              "type": "string",
+              "canBeUsedToMatch": true,
+              "removed": true
+            },
+            {
+              "id": "Data",
+              "displayName": "Data",
+              "required": false,
+              "defaultMatch": false,
+              "display": true,
+              "type": "string",
+              "canBeUsedToMatch": true,
+              "removed": true
+            },
+            {
+              "id": "Invoice_Number",
+              "displayName": "Invoice_Number",
+              "required": false,
+              "defaultMatch": false,
+              "display": true,
+              "type": "string",
+              "canBeUsedToMatch": true,
+              "removed": false
+            },
+            {
+              "id": "Supplier",
+              "displayName": "Supplier",
+              "required": false,
+              "defaultMatch": false,
+              "display": true,
+              "type": "string",
+              "canBeUsedToMatch": true,
+              "removed": true
+            },
+            {
+              "id": "VAT_Number",
+              "displayName": "VAT_Number",
+              "required": false,
+              "defaultMatch": false,
+              "display": true,
+              "type": "string",
+              "canBeUsedToMatch": true,
+              "removed": true
+            },
+            {
+              "id": "Net_Amount",
+              "displayName": "Net_Amount",
+              "required": false,
+              "defaultMatch": false,
+              "display": true,
+              "type": "string",
+              "canBeUsedToMatch": true,
+              "removed": true
+            },
+            {
+              "id": "VAT_Amount",
+              "displayName": "VAT_Amount",
+              "required": false,
+              "defaultMatch": false,
+              "display": true,
+              "type": "string",
+              "canBeUsedToMatch": true,
+              "removed": true
+            },
+            {
+              "id": "VAT_Percentage",
+              "displayName": "VAT_Percentage",
+              "required": false,
+              "defaultMatch": false,
+              "display": true,
+              "type": "string",
+              "canBeUsedToMatch": true,
+              "removed": true
+            },
+            {
+              "id": "Total_Amount",
+              "displayName": "Total_Amount",
+              "required": false,
+              "defaultMatch": false,
+              "display": true,
+              "type": "string",
+              "canBeUsedToMatch": true,
+              "removed": true
+            },
+            {
+              "id": "File_ID",
+              "displayName": "File_ID",
+              "required": false,
+              "defaultMatch": false,
+              "display": true,
+              "type": "string",
+              "canBeUsedToMatch": true,
+              "removed": true
+            },
+            {
+              "id": "File_Name",
+              "displayName": "File_Name",
+              "required": false,
+              "defaultMatch": false,
+              "display": true,
+              "type": "string",
+              "canBeUsedToMatch": true,
+              "removed": true
+            },
+            {
+              "id": "Email_From",
+              "displayName": "Email_From",
+              "required": false,
+              "defaultMatch": false,
+              "display": true,
+              "type": "string",
+              "canBeUsedToMatch": true,
+              "removed": true
+            },
+            {
+              "id": "Status",
+              "displayName": "Status",
+              "required": false,
+              "defaultMatch": false,
+              "display": true,
+              "type": "string",
+              "canBeUsedToMatch": true,
+              "removed": true
+            },
+            {
+              "id": "Processed_At",
+              "displayName": "Processed_At",
+              "required": false,
+              "defaultMatch": false,
+              "display": true,
+              "type": "string",
+              "canBeUsedToMatch": true,
+              "removed": true
+            },
+            {
+              "id": "Payment_ Status",
+              "displayName": "Payment_ Status",
+              "required": false,
+              "defaultMatch": false,
+              "display": true,
+              "type": "string",
+              "canBeUsedToMatch": true,
+              "removed": false
+            },
+            {
+              "id": "Payment_Date",
+              "displayName": "Payment_Date",
+              "required": false,
+              "defaultMatch": false,
+              "display": true,
+              "type": "string",
+              "canBeUsedToMatch": true,
+              "removed": false
+            },
+            {
+              "id": "Payment_Amount",
+              "displayName": "Payment_Amount",
+              "required": false,
+              "defaultMatch": false,
+              "display": true,
+              "type": "string",
+              "canBeUsedToMatch": true,
+              "removed": false
+            },
+            {
+              "id": "Bank_Reference",
+              "displayName": "Bank_Reference",
+              "required": false,
+              "defaultMatch": false,
+              "display": true,
+              "type": "string",
+              "canBeUsedToMatch": true,
+              "removed": false
+            },
+            {
+              "id": "Reconciliation_Confidence",
+              "displayName": "Reconciliation_Confidence",
+              "required": false,
+              "defaultMatch": false,
+              "display": true,
+              "type": "string",
+              "canBeUsedToMatch": true,
+              "removed": false
+            },
+            {
+              "id": "Reconciliation_Notes",
+              "displayName": "Reconciliation_Notes",
+              "required": false,
+              "defaultMatch": false,
+              "display": true,
+              "type": "string",
+              "canBeUsedToMatch": true,
+              "removed": false
+            },
+            {
+              "id": "row_number",
+              "displayName": "row_number",
+              "required": false,
+              "defaultMatch": false,
+              "display": true,
+              "type": "number",
+              "canBeUsedToMatch": true,
+              "readOnly": true,
+              "removed": true
+            }
+          ],
+          "attemptToConvertTypes": false,
+          "convertFieldsToString": false
+        },
+        "options": {}
+      },
+      "name": "11_Update_Invoice_PAID",
+      "type": "n8n-nodes-base.googleSheets",
+      "typeVersion": 4,
+      "position": [
+        3760,
+        -64
+      ],
+      "id": "57598845-36ed-476b-93eb-1213fdf52665",
+      "credentials": {
+        "googleSheetsOAuth2Api": {
+          "id": "y4lkvoVCtBAtc4vA",
+          "name": "Google Sheets account"
+        }
+      },
+      "notes": "Mark invoice as PAID in Transactions sheet"
+    },
+    {
+      "parameters": {
+        "conditions": {
+          "string": [
+            {
+              "value1": "={{ $json.Status }}",
+              "value2": "MATCHED"
+            }
+          ]
+        }
+      },
+      "name": "10_IF_Auto_Matched",
+      "type": "n8n-nodes-base.if",
+      "typeVersion": 1,
+      "position": [
+        3536,
+        48
+      ],
+      "id": "0818bb06-77c9-43ad-ab64-f69b59a4161b",
+      "notes": "Only auto-update if high confidence match"
+    },
+    {
+      "parameters": {
+        "operation": "append",
+        "documentId": {
+          "__rl": true,
+          "mode": "list",
+          "value": ""
+        },
+        "sheetName": {
+          "__rl": true,
+          "value": 649883267,
+          "mode": "list",
+          "cachedResultName": "Bank Transactions",
+          "cachedResultUrl": "https://docs.google.com/spreadsheets/d/1vMEAgarLebvSNF6P8pcCzczVT-3CXRTm2tJnzu22rUY/edit#gid=649883267"
+        },
+        "columns": {
+          "mappingMode": "defineBelow",
+          "value": {
+            "Transaction_Date": "={{ $json.transaction_date }}",
+            "Desription_Raw": "={{ $json.description_raw }}",
+            "Description_Cleaned": "={{ $json.description_cleaned }}",
+            "Amount": "={{ $json.amount }}",
+            "Currency": "EUR",
+            "Category": "={{ $json.category }}",
+            "Processed_At": "={{ $now.toISO() }}",
+            "Matched_Invoice_Number": "={{ $json.matched_invoice_number || '' }}",
+            "Match_Confidence": "={{ $json.match_confidence || 0 }}",
+            "Match_Method": "={{ $json.match_method || 'NONE' }}",
+            "Status": "={{ $json.status || 'UNMATCHED' }}",
+            "Notes": "={{ $json.reasons || '' }}"
+          },
+          "matchingColumns": [],
+          "schema": [
+            {
+              "id": "Transaction_ID",
+              "displayName": "Transaction_ID",
+              "required": false,
+              "defaultMatch": false,
+              "display": true,
+              "type": "string",
+              "canBeUsedToMatch": true,
+              "removed": false
+            },
+            {
+              "id": "Transaction_Date",
+              "displayName": "Transaction_Date",
+              "required": false,
+              "defaultMatch": false,
+              "display": true,
+              "type": "string",
+              "canBeUsedToMatch": true,
+              "removed": false
+            },
+            {
+              "id": "Desription_Raw",
+              "displayName": "Desription_Raw",
+              "required": false,
+              "defaultMatch": false,
+              "display": true,
+              "type": "string",
+              "canBeUsedToMatch": true,
+              "removed": false
+            },
+            {
+              "id": "Description_Cleaned",
+              "displayName": "Description_Cleaned",
+              "required": false,
+              "defaultMatch": false,
+              "display": true,
+              "type": "string",
+              "canBeUsedToMatch": true,
+              "removed": false
+            },
+            {
+              "id": "Amount",
+              "displayName": "Amount",
+              "required": false,
+              "defaultMatch": false,
+              "display": true,
+              "type": "string",
+              "canBeUsedToMatch": true,
+              "removed": false
+            },
+            {
+              "id": "Currency",
+              "displayName": "Currency",
+              "required": false,
+              "defaultMatch": false,
+              "display": true,
+              "type": "string",
+              "canBeUsedToMatch": true,
+              "removed": false
+            },
+            {
+              "id": "Category",
+              "displayName": "Category",
+              "required": false,
+              "defaultMatch": false,
+              "display": true,
+              "type": "string",
+              "canBeUsedToMatch": true,
+              "removed": false
+            },
+            {
+              "id": "Matched_Invoice_Number",
+              "displayName": "Matched_Invoice_Number",
+              "required": false,
+              "defaultMatch": false,
+              "display": true,
+              "type": "string",
+              "canBeUsedToMatch": true,
+              "removed": false
+            },
+            {
+              "id": "Match_Confidence",
+              "displayName": "Match_Confidence",
+              "required": false,
+              "defaultMatch": false,
+              "display": true,
+              "type": "string",
+              "canBeUsedToMatch": true,
+              "removed": false
+            },
+            {
+              "id": "Match_Method",
+              "displayName": "Match_Method",
+              "required": false,
+              "defaultMatch": false,
+              "display": true,
+              "type": "string",
+              "canBeUsedToMatch": true,
+              "removed": false
+            },
+            {
+              "id": "Status",
+              "displayName": "Status",
+              "required": false,
+              "defaultMatch": false,
+              "display": true,
+              "type": "string",
+              "canBeUsedToMatch": true,
+              "removed": false
+            },
+            {
+              "id": "Processed_At",
+              "displayName": "Processed_At",
+              "required": false,
+              "defaultMatch": false,
+              "display": true,
+              "type": "string",
+              "canBeUsedToMatch": true,
+              "removed": false
+            },
+            {
+              "id": "Notes",
+              "displayName": "Notes",
+              "required": false,
+              "defaultMatch": false,
+              "display": true,
+              "type": "string",
+              "canBeUsedToMatch": true,
+              "removed": false
+            }
+          ],
+          "attemptToConvertTypes": false,
+          "convertFieldsToString": false
+        },
+        "options": {}
+      },
+      "name": "9_Log_To_Bank_Sheet",
+      "type": "n8n-nodes-base.googleSheets",
+      "typeVersion": 4,
+      "position": [
+        3328,
+        48
+      ],
+      "id": "3d16d559-f4e1-4218-af0b-d38cbb93e9c7",
+      "credentials": {
+        "googleSheetsOAuth2Api": {
+          "id": "y4lkvoVCtBAtc4vA",
+          "name": "Google Sheets account"
+        }
+      },
+      "notes": "Save all transactions to Bank_Transactions sheet"
+    },
+    {
+      "parameters": {
+        "jsCode": "// BANK TRANSACTION TO INVOICE MATCHING ENGINE\n// Professional fuzzy matching with confidence scoring\n\nconst bankTransactions = $input.all(); // From Node 6 (split transactions)\nconst invoicesData = $('7_Load_Unpaid_Invoices').all(); // From Node 7\n\n// Filter to only unpaid invoices\nconst invoices = invoicesData.filter(inv => {\n  const status = inv.json.Payment_Status || inv.json.payment_status || '';\n  return !status || status === 'UNPAID' || status === '';\n});\n\nconst matches = [];\n\n// LEVENSHTEIN DISTANCE for fuzzy string matching\nfunction levenshtein(a, b) {\n  if (!a || !b) return 999;\n  a = String(a).toUpperCase();\n  b = String(b).toUpperCase();\n  \n  const matrix = [];\n  for (let i = 0; i <= b.length; i++) {\n    matrix[i] = [i];\n  }\n  for (let j = 0; j <= a.length; j++) {\n    matrix[0][j] = j;\n  }\n  \n  for (let i = 1; i <= b.length; i++) {\n    for (let j = 1; j <= a.length; j++) {\n      if (b.charAt(i - 1) === a.charAt(j - 1)) {\n        matrix[i][j] = matrix[i - 1][j - 1];\n      } else {\n        matrix[i][j] = Math.min(\n          matrix[i - 1][j - 1] + 1,\n          matrix[i][j - 1] + 1,\n          matrix[i - 1][j] + 1\n        );\n      }\n    }\n  }\n  \n  return matrix[b.length][a.length];\n}\n\n// CALCULATE MATCH CONFIDENCE\nfunction calculateConfidence(invoice, bankTxn) {\n  let score = 0;\n  const reasons = [];\n  \n  // === AMOUNT MATCHING (40 points) ===\n  const invoiceAmount = Math.abs(parseFloat(invoice.json.Total_Amount || invoice.json.total_amount || 0));\n  const bankAmount = Math.abs(bankTxn.json.amount_abs);\n  const amountDiff = Math.abs(invoiceAmount - bankAmount);\n  \n  if (amountDiff === 0) {\n    score += 40;\n    reasons.push('Exact amount match');\n  } else if (amountDiff <= 5) {\n    score += 35;\n    reasons.push(`Amount within €5 (diff: €${amountDiff.toFixed(2)})`);\n  } else if (amountDiff <= 20) {\n    score += 20;\n    reasons.push(`Amount within €20 (diff: €${amountDiff.toFixed(2)})`);\n  } else if (amountDiff <= 50) {\n    score += 10;\n    reasons.push(`Amount within €50 (diff: €${amountDiff.toFixed(2)})`);\n  } else {\n    reasons.push(`Amount mismatch: €${amountDiff.toFixed(2)}`);\n  }\n  \n  // === DATE MATCHING (25 points) ===\n  const invoiceDateStr = invoice.json.Date || invoice.json.date || invoice.json.Data || '';\n  const bankDateStr = bankTxn.json.transaction_date || '';\n  \n  if (invoiceDateStr && bankDateStr) {\n    const invoiceDate = new Date(invoiceDateStr);\n    const bankDate = new Date(bankDateStr);\n    \n    if (!isNaN(invoiceDate) && !isNaN(bankDate)) {\n      const daysDiff = Math.abs((bankDate - invoiceDate) / (1000 * 60 * 60 * 24));\n      \n      if (daysDiff === 0) {\n        score += 25;\n        reasons.push('Same date');\n      } else if (daysDiff <= 7) {\n        score += 20;\n        reasons.push(`Within 7 days (${Math.floor(daysDiff)} days)`);\n      } else if (daysDiff <= 14) {\n        score += 15;\n        reasons.push(`Within 14 days (${Math.floor(daysDiff)} days)`);\n      } else if (daysDiff <= 30) {\n        score += 10;\n        reasons.push(`Within 30 days (${Math.floor(daysDiff)} days)`);\n      } else {\n        reasons.push(`Date difference: ${Math.floor(daysDiff)} days`);\n      }\n    }\n  } else {\n    reasons.push('Date comparison unavailable');\n  }\n  \n  // === NAME MATCHING (35 points) ===\n  const supplierName = String(invoice.json.Supplier || invoice.json.supplier || '').toUpperCase().trim();\n  const bankEntity = String(bankTxn.json.extracted_entity || '').toUpperCase().trim();\n  const bankDesc = String(bankTxn.json.description_cleaned || '').toUpperCase().trim();\n  \n  if (supplierName && (bankEntity || bankDesc)) {\n    // Check for exact substring match\n    if (bankEntity.includes(supplierName) || supplierName.includes(bankEntity)) {\n      score += 35;\n      reasons.push('Exact supplier name match');\n    } \n    else if (bankDesc.includes(supplierName)) {\n      score += 35;\n      reasons.push('Supplier name in description');\n    }\n    // Check for fuzzy match\n    else {\n      const distance = levenshtein(supplierName, bankEntity);\n      const maxLen = Math.max(supplierName.length, bankEntity.length);\n      const similarity = maxLen > 0 ? (1 - (distance / maxLen)) : 0;\n      \n      if (similarity > 0.8) {\n        score += 30;\n        reasons.push(`Strong name match (${(similarity * 100).toFixed(0)}%)`);\n      } else if (similarity > 0.6) {\n        score += 20;\n        reasons.push(`Good name match (${(similarity * 100).toFixed(0)}%)`);\n      } else if (similarity > 0.4) {\n        score += 10;\n        reasons.push(`Weak name match (${(similarity * 100).toFixed(0)}%)`);\n      } else {\n        // Check if any word from supplier name is in bank description\n        const supplierWords = supplierName.split(/\\s+/).filter(w => w.length > 3);\n        const matchedWords = supplierWords.filter(word => \n          bankDesc.includes(word) || bankEntity.includes(word)\n        );\n        \n        if (matchedWords.length > 0) {\n          const wordMatchScore = Math.min(15, matchedWords.length * 5);\n          score += wordMatchScore;\n          reasons.push(`Partial name match: ${matchedWords.join(', ')}`);\n        } else {\n          reasons.push('No name match');\n        }\n      }\n    }\n  } else {\n    reasons.push('Supplier name unavailable for comparison');\n  }\n  \n  return { score, reasons: reasons.join('; ') };\n}\n\n// === PROCESS EACH BANK TRANSACTION ===\nfor (const bankTxn of bankTransactions) {\n  \n  // Only match outgoing payments (negative amounts = money paid out)\n  if (bankTxn.json.amount >= 0) {\n    // This is incoming money or zero, not a supplier payment\n    matches.push({\n      json: {\n        ...bankTxn.json,\n        matched_invoice_number: '',\n        matched_invoice_id: '',\n        match_confidence: 0,\n        match_method: 'N/A',\n        status: 'UNMATCHED',\n        reasons: 'Incoming payment or zero amount - not matched to supplier invoices'\n      }\n    });\n    continue;\n  }\n  \n  // Skip if looks like a fee/bank charge\n  const description = String(bankTxn.json.description_raw || '').toUpperCase();\n  if (/COMMISSIONE|SPESE BANCARIE|IMPOSTA DI BOLLO|CANONE/i.test(description)) {\n    matches.push({\n      json: {\n        ...bankTxn.json,\n        matched_invoice_number: '',\n        matched_invoice_id: '',\n        match_confidence: 0,\n        match_method: 'N/A',\n        status: 'UNMATCHED',\n        reasons: 'Bank fee or charge - not an invoice payment'\n      }\n    });\n    continue;\n  }\n  \n  let bestMatch = null;\n  let bestScore = 0;\n  let bestReasons = '';\n  \n  // Try to match against all unpaid invoices\n  for (const invoice of invoices) {\n    const { score, reasons } = calculateConfidence(invoice, bankTxn);\n    \n    if (score > bestScore) {\n      bestScore = score;\n      bestMatch = invoice;\n      bestReasons = reasons;\n    }\n  }\n  \n  // Determine match quality and action\n  if (bestScore >= 85) {\n    // AUTO-MATCH (high confidence)\n    matches.push({\n      json: {\n        ...bankTxn.json,\n        matched_invoice_number: bestMatch.json.Invoice_Number || bestMatch.json.invoice_number || '',\n        matched_invoice_id: bestMatch.json.ID || bestMatch.json._RowNumber || '',\n        matched_invoice_supplier: bestMatch.json.Supplier || bestMatch.json.supplier || '',\n        matched_invoice_amount: bestMatch.json.Total_Amount || bestMatch.json.total_amount || 0,\n        match_confidence: bestScore,\n        match_method: 'AUTO',\n        status: 'MATCHED',\n        reasons: bestReasons\n      }\n    });\n  } \n  else if (bestScore >= 50) {\n    // SUGGEST MATCH (medium confidence - needs manual review)\n    matches.push({\n      json: {\n        ...bankTxn.json,\n        matched_invoice_number: bestMatch.json.Invoice_Number || bestMatch.json.invoice_number || '',\n        matched_invoice_id: bestMatch.json.ID || bestMatch.json._RowNumber || '',\n        matched_invoice_supplier: bestMatch.json.Supplier || bestMatch.json.supplier || '',\n        matched_invoice_amount: bestMatch.json.Total_Amount || bestMatch.json.total_amount || 0,\n        match_confidence: bestScore,\n        match_method: 'SUGGEST',\n        status: 'REVIEW_NEEDED',\n        reasons: bestReasons + ' - PLEASE REVIEW MANUALLY'\n      }\n    });\n  } \n  else {\n    // NO MATCH (low confidence)\n    const noteText = bestScore > 0 && bestMatch \n      ? `Best match: Invoice ${bestMatch.json.Invoice_Number || bestMatch.json.invoice_number} (${bestScore}% confidence - too low). ${bestReasons}`\n      : 'No suitable match found';\n      \n    matches.push({\n      json: {\n        ...bankTxn.json,\n        matched_invoice_number: '',\n        matched_invoice_id: '',\n        match_confidence: bestScore,\n        match_method: 'NONE',\n        status: 'UNMATCHED',\n        reasons: noteText\n      }\n    });\n  }\n}\n\n// Return all matches (both matched and unmatched)\nreturn matches;"
+      },
+      "name": "8_Match_To_Invoices",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        3120,
+        48
+      ],
+      "id": "c1ac01d3-4015-493c-81e4-6b8b1fa8a6fc",
+      "notes": "Fuzzy match bank transactions to invoices"
+    },
+    {
+      "parameters": {
+        "documentId": {
+          "__rl": true,
+          "value": "",
+          "mode": "id"
+        },
+        "sheetName": {
+          "__rl": true,
+          "value": "",
+          "mode": "list",
+          "cachedResultName": "",
+          "cachedResultUrl": ""
+        }
+      },
+      "name": "7_Load_Unpaid_Invoices",
+      "type": "n8n-nodes-base.googleSheets",
+      "typeVersion": 4,
+      "position": [
+        2592,
+        -32
+      ],
+      "id": "c8f0ffa5-bfcb-4987-9325-586dd014d808",
+      "credentials": {
+        "googleSheetsOAuth2Api": {
+          "id": "y4lkvoVCtBAtc4vA",
+          "name": "Google Sheets account"
+        }
+      },
+      "notes": "Get all invoices that haven't been paid yet"
+    },
+    {
+      "parameters": {
+        "jsCode": "const result = $input.first().json;\nconst transactions = result.transactions || [];\n\nif (transactions.length === 0) {\n  throw new Error('No transactions found in PDF');\n}\n\nreturn transactions.map(txn => ({json: txn}));"
+      },
+      "name": "6_Split_Transactions",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        2768,
+        192
+      ],
+      "id": "89979f6c-b037-4ba9-8a40-9429300be33e",
+      "notes": "Convert array of transactions into separate items"
+    },
+    {
+      "parameters": {
+        "jsCode": "const ocrResponse = $input.first().json;\n\n// Check if we have a valid response\nif (!ocrResponse.responses || !ocrResponse.responses[0]) {\n  throw new Error('No response from Vision API');\n}\n\n// files:annotate has nested responses structure\nconst firstResponse = ocrResponse.responses[0];\n\n// Handle both /files:annotate (PDF) and /images:annotate (image) responses\nlet fullText = '';\n\nif (firstResponse.responses && firstResponse.responses[0]) {\n  // This is from /files:annotate (PDF) - has nested responses\n  const pageResponse = firstResponse.responses[0];\n  \n  // Check for errors\n  if (pageResponse.error) {\n    throw new Error(`Vision API error: ${pageResponse.error.message}`);\n  }\n  \n  fullText = pageResponse.fullTextAnnotation?.text || '';\n} else {\n  // This is from /images:annotate (image) - direct structure\n  // Check for errors\n  if (firstResponse.error) {\n    throw new Error(`Vision API error: ${firstResponse.error.message}`);\n  }\n  \n  fullText = firstResponse.fullTextAnnotation?.text || '';\n}\n\nif (!fullText) {\n  throw new Error('No text found in document');\n}\n\nconsole.log('Extracted text length:', fullText.length);\nconsole.log('First 200 chars:', fullText.substring(0, 200));\n\n// Return the extracted text\nreturn [{\n  json: {\n    fullText: fullText,\n    textLength: fullText.length\n  }\n}];"
+      },
+      "name": "4_Parse_OCR_Text",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        2016,
+        192
+      ],
+      "id": "8c5f6852-aa8c-42cd-b582-8aa99409185e",
+      "notes": "Extract clean text from OCR response"
+    },
+    {
+      "parameters": {
+        "operation": "download",
+        "fileId": {
+          "__rl": true,
+          "value": "={{ $json.id }}",
+          "mode": "id"
+        },
+        "options": {}
+      },
+      "name": "2_Download_PDF",
+      "type": "n8n-nodes-base.googleDrive",
+      "typeVersion": 3,
+      "position": [
+        1456,
+        192
+      ],
+      "id": "ca703812-2a26-4735-ab17-4c07e2527efc",
+      "credentials": {
+        "googleDriveOAuth2Api": {
+          "id": "EBWQKCdB4QPURN5P",
+          "name": "Justin's Google Drive"
+        }
+      },
+      "notes": "Downloads the PDF file from Google Drive"
+    },
+    {
+      "parameters": {
+        "pollTimes": {
+          "item": [
+            {
+              "mode": "everyMinute"
+            }
+          ]
+        },
+        "triggerOn": "specificFolder",
+        "folderToWatch": {
+          "__rl": true,
+          "value": "{DRIVE_FOLDER_ID}",
+          "mode": "list",
+          "cachedResultName": "To_Process",
+          "cachedResultUrl": "https://drive.google.com/drive/folders/{DRIVE_FOLDER_ID}"
+        },
+        "event": "fileCreated",
+        "options": {}
+      },
+      "name": "1_Watch_For_PDF_Upload",
+      "type": "n8n-nodes-base.googleDriveTrigger",
+      "typeVersion": 1,
+      "position": [
+        1280,
+        192
+      ],
+      "id": "3409eee7-0508-4d34-8bb8-65fd28c67584",
+      "credentials": {
+        "googleDriveOAuth2Api": {
+          "id": "EBWQKCdB4QPURN5P",
+          "name": "Justin's Google Drive"
+        }
+      },
+      "notes": "Triggers when PDF uploaded to Bank_Statements/To_Process folder"
+    }
+  ],
+  "pinData": {},
+  "connections": {
+    "Code in JavaScript1": {
+      "main": [
+        [
+          {
+            "node": "6_Split_Transactions",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "AI Agent": {
+      "main": [
+        [
+          {
+            "node": "Code in JavaScript1",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "OpenAI Chat Model": {
+      "ai_languageModel": [
+        [
+          {
+            "node": "AI Agent",
+            "type": "ai_languageModel",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Code in JavaScript": {
+      "main": [
+        [
+          {
+            "node": "HTTP Request",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "HTTP Request": {
+      "main": [
+        [
+          {
+            "node": "4_Parse_OCR_Text",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Merge": {
+      "main": [
+        [
+          {
+            "node": "8_Match_To_Invoices",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "12_Archive_PDF": {
+      "main": [
+        [
+          {
+            "node": "13_Send_Summary_Email",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "11_Update_Invoice_PAID": {
+      "main": [
+        [
+          {
+            "node": "12_Archive_PDF",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "10_IF_Auto_Matched": {
+      "main": [
+        [
+          {
+            "node": "11_Update_Invoice_PAID",
+            "type": "main",
+            "index": 0
+          }
+        ],
+        [
+          {
+            "node": "12_Archive_PDF",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "9_Log_To_Bank_Sheet": {
+      "main": [
+        [
+          {
+            "node": "10_IF_Auto_Matched",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "8_Match_To_Invoices": {
+      "main": [
+        [
+          {
+            "node": "9_Log_To_Bank_Sheet",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "7_Load_Unpaid_Invoices": {
+      "main": [
+        [
+          {
+            "node": "Merge",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "6_Split_Transactions": {
+      "main": [
+        [
+          {
+            "node": "Merge",
+            "type": "main",
+            "index": 1
+          }
+        ]
+      ]
+    },
+    "4_Parse_OCR_Text": {
+      "main": [
+        [
+          {
+            "node": "7_Load_Unpaid_Invoices",
+            "type": "main",
+            "index": 0
+          },
+          {
+            "node": "AI Agent",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "2_Download_PDF": {
+      "main": [
+        [
+          {
+            "node": "Code in JavaScript",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "1_Watch_For_PDF_Upload": {
+      "main": [
+        [
+          {
+            "node": "2_Download_PDF",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    }
+  },
+  "active": false,
+  "settings": {
+    "executionOrder": "v1"
+  },
+  "versionId": "28063b37-b386-4165-8612-584a4781ac7f",
+  "meta": {
+    "templateCredsSetupCompleted": true,
+    "instanceId": "a3683a745f363d5955049e67674d4631d96e1cd0c49b7a8645fb83a7aea0f8d6"
+  },
+  "id": "4nOO3LY9tJ1jrFTO",
+  "tags": []
+}
