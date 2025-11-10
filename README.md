@@ -19,4 +19,4 @@ n8n, Pipedream (JavaScript), AWS (Lambda, S3, API Gateway), Python, Playwright, 
 
 ---
 
-📫 **Contact:** [justinchow2023@gmail.com](mailto:justinchow2023@gmail.com)
+**Contact:** [justinchow2023@gmail.com](mailto:justinchow2023@gmail.com)
