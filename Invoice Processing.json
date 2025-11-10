@@ -1,0 +1,601 @@
+{
+  "name": "Invoice Processing",
+  "nodes": [
+    {
+      "parameters": {
+        "pollTimes": {
+          "item": [
+            {
+              "mode": "everyMinute"
+            }
+          ]
+        },
+        "simple": false,
+        "filters": {
+          "labelIds": [
+            "Label_3222294660220771754"
+          ]
+        },
+        "options": {
+          "downloadAttachments": true
+        }
+      },
+      "type": "n8n-nodes-base.gmailTrigger",
+      "typeVersion": 1.3,
+      "position": [
+        -720,
+        1696
+      ],
+      "id": "6b30532a-44f6-4089-8411-f3606013e885",
+      "name": "Gmail Trigger",
+      "credentials": {
+        "gmailOAuth2": {
+          "id": "Byr3nUCTqdOsErTv",
+          "name": "Gmail account"
+        }
+      }
+    },
+    {
+      "parameters": {
+        "operation": "download",
+        "fileId": {
+          "__rl": true,
+          "value": "={{ $json.id }}",
+          "mode": "id"
+        },
+        "options": {}
+      },
+      "name": "4_Download_From_Drive",
+      "type": "n8n-nodes-base.googleDrive",
+      "typeVersion": 3,
+      "position": [
+        -96,
+        1696
+      ],
+      "id": "ec0017a7-70d9-4e46-96ad-59c6e8ae553f",
+      "credentials": {
+        "googleDriveOAuth2Api": {
+          "id": "EBWQKCdB4QPURN5P",
+          "name": "Justin's Google Drive"
+        }
+      },
+      "notes": "Downloads the uploaded PDF to get binary data for OCR"
+    },
+    {
+      "parameters": {
+        "jsCode": "// Get the binary data from the downloaded file\nconst binaryPropertyName = 'data';\n\n// Use n8n's built-in helper to get the binary data buffer\nconst binaryData = await this.helpers.getBinaryDataBuffer(0, binaryPropertyName);\n\n// Convert buffer to base64\nconst base64Content = binaryData.toString('base64');\n\nconsole.log('Base64 content length:', base64Content.length);\nconsole.log('First 50 chars:', base64Content.substring(0, 50));\n\n// Get file info from upload step\nconst uploadInfo = $('3_Upload_To_Drive1').item.json;\nconst extractInfo = $('2_Extract_PDF_Attachment1').item.json;\n\n// Format for Google Vision API\nreturn [{\n  json: {\n    requests: [{\n      inputConfig: {\n        content: base64Content,\n        mimeType: 'application/pdf'\n      },\n      features: [{\n        type: 'DOCUMENT_TEXT_DETECTION'\n      }],\n      pages: [1]\n    }],\n    // Pass through metadata\n    _metadata: {\n      fileId: uploadInfo.id,\n      fileName: uploadInfo.name,\n      emailFrom: extractInfo.emailFrom,\n      emailSubject: extractInfo.emailSubject,\n      emailDate: extractInfo.emailDate\n    }\n  }\n}];"
+      },
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        96,
+        1696
+      ],
+      "id": "95c96373-15e9-4ed4-8008-9f74629dd961",
+      "name": "5_Convert_To_Base64"
+    },
+    {
+      "parameters": {
+        "method": "POST",
+        "url": "https://vision.googleapis.com/v1/files:annotate?key=YOUR KEY",
+        "sendBody": true,
+        "specifyBody": "json",
+        "jsonBody": "={{ { requests: $json.requests } }}",
+        "options": {}
+      },
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.2,
+      "position": [
+        288,
+        1696
+      ],
+      "id": "f14e2348-a5a7-4850-8341-fb3be34096f9",
+      "name": "6_Vision_API_OCR"
+    },
+    {
+      "parameters": {
+        "jsCode": "const ocrResponse = $input.first().json;\nconst metadata = $('5_Convert_To_Base64').item.json._metadata;\n\n// Check if we have a valid response\nif (!ocrResponse.responses || !ocrResponse.responses[0]) {\n  throw new Error('No response from Vision API');\n}\n\n// files:annotate has nested responses structure\nconst firstResponse = ocrResponse.responses[0];\n\n// Handle both /files:annotate (PDF) and /images:annotate (image) responses\nlet fullText = '';\n\nif (firstResponse.responses && firstResponse.responses[0]) {\n  // This is from /files:annotate (PDF) - has nested responses\n  const pageResponse = firstResponse.responses[0];\n  \n  // Check for errors\n  if (pageResponse.error) {\n    throw new Error(`Vision API error: ${pageResponse.error.message}`);\n  }\n  \n  fullText = pageResponse.fullTextAnnotation?.text || '';\n} else {\n  // This is from /images:annotate (image) - direct structure\n  // Check for errors\n  if (firstResponse.error) {\n    throw new Error(`Vision API error: ${firstResponse.error.message}`);\n  }\n  \n  fullText = firstResponse.fullTextAnnotation?.text || '';\n}\n\nif (!fullText) {\n  throw new Error('No text found in document');\n}\n\nconsole.log('Extracted text length:', fullText.length);\nconsole.log('First 200 chars:', fullText.substring(0, 200));\n\n// Return the extracted text with metadata\nreturn [{\n  json: {\n    fullText: fullText,\n    textLength: fullText.length,\n    // Pass through metadata\n    fileId: metadata.fileId,\n    fileName: metadata.fileName,\n    emailFrom: metadata.emailFrom,\n    emailSubject: metadata.emailSubject,\n    emailDate: metadata.emailDate\n  }\n}];"
+      },
+      "name": "7_Parse_OCR_Text",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        480,
+        1696
+      ],
+      "id": "85e43cc1-ef22-4a33-9074-03575fcfdfdf",
+      "notes": "Extract clean text from OCR response"
+    },
+    {
+      "parameters": {
+        "promptType": "define",
+        "text": "={{ $json.fullText }}",
+        "options": {
+          "systemMessage": "You are an Italian invoice data extractor. Extract structured information from this invoice text.\n\nExtract these fields:\n- invoice_no: Invoice number (look for: Fattura n., N., Invoice, Doc.)\n- invoice_date: Invoice date in YYYY-MM-DD format (look for: Data, Date, Emissione)\n- due_date: Due date in YYYY-MM-DD format (look for: Scadenza, Pagamento, Due date) - if not found, calculate as invoice_date + 30 days\n- supplier_name: Company name (usually at top of invoice)\n- vat_number: P.IVA or VAT number (11 digits)\n- amount_total: Total amount including VAT (look for: Totale, Total, Da pagare)\n- amount_net: Net amount before VAT\n- amount_vat: VAT amount\n- vat_percentage: VAT percentage (usually 22%)\n\nIMPORTANT:\n- Handle Italian date format (dd/mm/yyyy or dd-mm-yyyy) and convert to YYYY-MM-DD\n- Handle Italian number format (1.234,56 = 1234.56)\n- If a field is not found, set it to null\n- Extract supplier_name from the first few lines of the document\n- If due_date is missing, calculate it as invoice_date + 30 days\n\nReturn ONLY valid JSON in this exact format:\n{\n  \"invoice_no\": \"2024/001\",\n  \"invoice_date\": \"2024-01-15\",\n  \"due_date\": \"2024-02-14\",\n  \"supplier_name\": \"ACME SRL\",\n  \"vat_number\": \"12345678901\",\n  \"amount_total\": 1234.56,\n  \"amount_net\": 1011.93,\n  \"amount_vat\": 222.63,\n  \"vat_percentage\": 22,\n  \"extraction_confidence\": \"high\"\n}\n\nSet extraction_confidence to:\n- \"high\" if you found invoice_no, amount_total, and invoice_date\n- \"medium\" if you found amount_total and invoice_date but no invoice_no\n- \"low\" if you only found amount_total or are uncertain"
+        }
+      },
+      "type": "@n8n/n8n-nodes-langchain.agent",
+      "typeVersion": 2.2,
+      "position": [
+        672,
+        1696
+      ],
+      "id": "f5cccd28-14f2-48de-8cee-43c0673114c4",
+      "name": "8_AI_Extract_Invoice_Fields"
+    },
+    {
+      "parameters": {
+        "jsCode": "// Get the AI extracted data\nconst aiData = $input.item.json.output || $input.item.json;\nconst ocrData = $('7_Parse_OCR_Text').item.json;\n\n// Parse the AI output (it might be a string)\nlet extracted;\nif (typeof aiData === 'string') {\n  try {\n    extracted = JSON.parse(aiData);\n  } catch (e) {\n    // If parsing fails, try to extract JSON from the string\n    const jsonMatch = aiData.match(/\\{[\\s\\S]*\\}/);\n    if (jsonMatch) {\n      extracted = JSON.parse(jsonMatch[0]);\n    } else {\n      throw new Error('Could not parse AI output as JSON');\n    }\n  }\n} else {\n  extracted = aiData;\n}\n\n// Determine if extraction is valid\nconst hasAmount = extracted.amount_total !== null && extracted.amount_total > 0;\nconst hasInvoiceNo = extracted.invoice_no !== null && extracted.invoice_no?.length >= 3;\nconst hasDate = extracted.invoice_date !== null;\nconst hasSupplier = extracted.supplier_name !== null && extracted.supplier_name?.length > 3;\n\nlet extractionValid = false;\nlet confidence = extracted.extraction_confidence || 'low';\n\nif (hasAmount && hasInvoiceNo && hasDate) {\n  extractionValid = true;\n  confidence = 'high';\n} else if (hasAmount && (hasDate || hasSupplier)) {\n  extractionValid = true;\n  confidence = 'medium';\n}\n\n// Calculate due date if missing\nlet dueDate = extracted.due_date;\nif (!dueDate && extracted.invoice_date) {\n  const invoiceDateObj = new Date(extracted.invoice_date);\n  invoiceDateObj.setDate(invoiceDateObj.getDate() + 30);\n  dueDate = invoiceDateObj.toISOString().split('T')[0];\n}\n\n// Return formatted data for Google Sheets\nreturn {\n  json: {\n    // Core fields for Transactions sheet\n    invoice_no: extracted.invoice_no || '',\n    invoice_date: extracted.invoice_date || '',\n    due_date: dueDate || '',\n    supplier_name: extracted.supplier_name || '',\n    vat_number: extracted.vat_number || '',\n    amount_total: extracted.amount_total || 0,\n    amount_net: extracted.amount_net || 0,\n    amount_vat: extracted.amount_vat || 0,\n    vat_percentage: extracted.vat_percentage || 0,\n    \n    // Status\n    status: 'UNPAID',\n    \n    // Metadata\n    extractionValid: extractionValid,\n    extraction_confidence: confidence,\n    extracted_at: new Date().toISOString(),\n    \n    // File references from OCR step\n    file_id: ocrData.fileId,\n    file_name: ocrData.fileName,\n    file_url: `https://drive.google.com/file/d/${ocrData.fileId}/view`,\n    \n    // Email metadata\n    email_from: ocrData.emailFrom,\n    email_subject: ocrData.emailSubject,\n    email_date: ocrData.emailDate,\n    \n    // Debug info\n    raw_text_preview: ocrData.fullText.substring(0, 500)\n  }\n};"
+      },
+      "name": "9_Format_For_Sheets",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        928,
+        1696
+      ],
+      "id": "2e4b4d90-6f87-4c3d-aa6f-d782d7373cf7",
+      "notes": "Format extracted data for Google Sheets and add metadata"
+    },
+    {
+      "parameters": {
+        "conditions": {
+          "options": {
+            "caseSensitive": true,
+            "leftValue": "",
+            "typeValidation": "strict",
+            "version": 1
+          },
+          "conditions": [
+            {
+              "id": "3531d8ba-c88a-4050-97ed-9a4258625aec",
+              "leftValue": "={{ $json.extractionValid }}",
+              "rightValue": "",
+              "operator": {
+                "type": "boolean",
+                "operation": "true",
+                "singleValue": true
+              }
+            }
+          ],
+          "combinator": "or"
+        },
+        "options": {}
+      },
+      "name": "10_Check_Extraction_Success",
+      "type": "n8n-nodes-base.if",
+      "typeVersion": 2,
+      "position": [
+        1056,
+        1696
+      ],
+      "id": "1743d03d-23fb-40f6-99a2-67bb6619cb88",
+      "notes": "Routes to success or failure path based on extraction quality"
+    },
+    {
+      "parameters": {
+        "operation": "append",
+        "documentId": {
+          "__rl": true,
+          "value": "",
+          "mode": "id"
+        },
+        "sheetName": {
+          "__rl": true,
+          "value": "",
+          "mode": "name",
+          "cachedResultName": "",
+          "cachedResultUrl": ""
+        }
+      },
+      "name": "11_Append_To_Transactions",
+      "type": "n8n-nodes-base.googleSheets",
+      "typeVersion": 4,
+      "position": [
+        1248,
+        1584
+      ],
+      "id": "6ac7022c-ee93-4888-ac46-27e61ed9d3c9",
+      "credentials": {
+        "googleSheetsOAuth2Api": {
+          "id": "y4lkvoVCtBAtc4vA",
+          "name": "Google Sheets account"
+        }
+      },
+      "notes": "SUCCESS PATH: Saves extracted data to Google Sheets"
+    },
+    {
+      "parameters": {
+        "operation": "move",
+        "fileId": {
+          "__rl": true,
+          "value": "={{ $json.file_id }}",
+          "mode": "id"
+        },
+        "driveId": {
+          "__rl": true,
+          "value": "My Drive",
+          "mode": "list",
+          "cachedResultName": "My Drive",
+          "cachedResultUrl": "https://drive.google.com/drive/my-drive"
+        },
+        "folderId": {
+          "__rl": true,
+          "value": "",
+          "mode": "id"
+        }
+      },
+      "name": "12_Move_To_Processed",
+      "type": "n8n-nodes-base.googleDrive",
+      "typeVersion": 3,
+      "position": [
+        1440,
+        1584
+      ],
+      "id": "9e691ab3-c3fc-4c96-8ce5-47b2b937da91",
+      "credentials": {
+        "googleDriveOAuth2Api": {
+          "id": "EBWQKCdB4QPURN5P",
+          "name": "Justin's Google Drive"
+        }
+      },
+      "notes": "SUCCESS PATH: Moves file to /Processed_Invoices/"
+    },
+    {
+      "parameters": {
+        "operation": "move",
+        "fileId": {
+          "__rl": true,
+          "value": "={{ $json.file_id }}",
+          "mode": "id"
+        },
+        "driveId": {
+          "__rl": true,
+          "value": "My Drive",
+          "mode": "list",
+          "cachedResultName": "My Drive",
+          "cachedResultUrl": "https://drive.google.com/drive/my-drive"
+        },
+        "folderId": {
+          "__rl": true,
+          "value": "",
+          "mode": "id"
+        }
+      },
+      "name": "13_Move_To_Failed",
+      "type": "n8n-nodes-base.googleDrive",
+      "typeVersion": 3,
+      "position": [
+        1248,
+        1808
+      ],
+      "id": "ed0f8455-9887-4e0f-ba2f-afed70476c63",
+      "credentials": {
+        "googleDriveOAuth2Api": {
+          "id": "EBWQKCdB4QPURN5P",
+          "name": "Justin's Google Drive"
+        }
+      },
+      "notes": "FAILURE PATH: Moves file to /Failed_Invoices/"
+    },
+    {
+      "parameters": {
+        "authentication": "serviceAccount",
+        "operation": "append",
+        "documentId": {
+          "__rl": true,
+          "value": "",
+          "mode": "id"
+        },
+        "sheetName": {
+          "__rl": true,
+          "value": "Failed_Invoices",
+          "mode": "name"
+        },
+        "columns": {
+          "mappingMode": "defineBelow",
+          "value": {
+            "file_name": "={{ $json.file_name }}",
+            "file_id": "={{ $json.file_id }}",
+            "file_url": "={{ $json.file_url }}",
+            "email_from": "={{ $json.email_from }}",
+            "email_subject": "={{ $json.email_subject }}",
+            "failed_at": "={{ $now.toISO() }}",
+            "reason": "Extraction failed - manual review required",
+            "confidence": "={{ $json.extraction_confidence }}",
+            "extracted_text_preview": "={{ $json.raw_text_preview }}"
+          }
+        },
+        "options": {}
+      },
+      "name": "14_Log_Failed_Invoice",
+      "type": "n8n-nodes-base.googleSheets",
+      "typeVersion": 4,
+      "position": [
+        1440,
+        1808
+      ],
+      "id": "813c54e7-8009-4d9a-a711-67418e2179fa",
+      "credentials": {
+        "googleApi": {
+          "id": "HtDTVMdrNZH9sIO0",
+          "name": "Google Service Account account"
+        }
+      },
+      "notes": "FAILURE PATH: Logs failed extraction to Failed_Invoices sheet"
+    },
+    {
+      "parameters": {
+        "subject": "⚠️ Invoice Processing Failed",
+        "message": "=<h2>Invoice Processing Failed</h2>\n<p>An invoice could not be automatically processed and requires manual review.</p>\n\n<h3>Details:</h3>\n<ul>\n  <li><strong>File:</strong> {{ $json.file_name }}</li>\n  <li><strong>From:</strong> {{ $json.email_from }}</li>\n  <li><strong>Subject:</strong> {{ $json.email_subject }}</li>\n  <li><strong>Confidence:</strong> {{ $json.extraction_confidence }}</li>\n  <li><strong>Time:</strong> {{ $now.toISO() }}</li>\n</ul>\n\n<p><a href=\"{{ $json.file_url }}\">View File in Drive</a></p>\n\n<h3>Extracted Text Preview:</h3>\n<pre>{{ $json.raw_text_preview }}</pre>",
+        "options": {}
+      },
+      "name": "15_Send_Failure_Alert",
+      "type": "n8n-nodes-base.gmail",
+      "typeVersion": 2.1,
+      "position": [
+        1632,
+        1808
+      ],
+      "id": "6c012ed2-0224-4a9f-8fdb-310da176dd68",
+      "webhookId": "90920576-8a10-41bf-89c6-9c25b2ff5343",
+      "credentials": {
+        "gmailOAuth2": {
+          "id": "Byr3nUCTqdOsErTv",
+          "name": "Gmail account"
+        }
+      },
+      "notes": "FAILURE PATH: Sends email alert for manual review"
+    },
+    {
+      "parameters": {
+        "jsCode": "// Extract PDF attachment from Gmail and upload to Drive\nconst item = $input.item;\n\n// Get email metadata\nconst emailFrom = item.json.from?.value?.[0]?.address || 'unknown';\nconst emailSubject = item.json.subject || 'No subject';\nconst emailDate = item.json.date || new Date().toISOString();\n\n// Check if there are attachments\nif (!item.binary || Object.keys(item.binary).length === 0) {\n  throw new Error('No attachments found in email');\n}\n\n// Find PDF attachment\nlet pdfAttachment = null;\nlet attachmentKey = null;\n\nfor (const [key, attachment] of Object.entries(item.binary)) {\n  const fileName = attachment.fileName || '';\n  const mimeType = attachment.mimeType || '';\n  \n  if (mimeType === 'application/pdf' || fileName.toLowerCase().endsWith('.pdf')) {\n    pdfAttachment = attachment;\n    attachmentKey = key;\n    break;\n  }\n}\n\nif (!pdfAttachment) {\n  throw new Error('No PDF attachment found in email');\n}\n\nconsole.log('Found PDF attachment:', pdfAttachment.fileName);\n\n// Return data with binary attachment and metadata\nreturn {\n  json: {\n    fileName: pdfAttachment.fileName,\n    mimeType: pdfAttachment.mimeType,\n    emailFrom: emailFrom,\n    emailSubject: emailSubject,\n    emailDate: emailDate,\n    attachmentKey: attachmentKey\n  },\n  binary: {\n    data: pdfAttachment\n  }\n};"
+      },
+      "name": "2_Extract_PDF_Attachment1",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        -480,
+        1696
+      ],
+      "id": "90e3b187-fb4c-4e12-86c7-c31ea3222dfb",
+      "notes": "Finds and extracts PDF from email attachments"
+    },
+    {
+      "parameters": {
+        "name": "={{ $json.fileName }}",
+        "driveId": {
+          "__rl": true,
+          "mode": "list",
+          "value": "My Drive"
+        },
+        "folderId": {
+          "__rl": true,
+          "value": "",
+          "mode": "id"
+        },
+        "options": {}
+      },
+      "type": "n8n-nodes-base.googleDrive",
+      "typeVersion": 3,
+      "position": [
+        -288,
+        1696
+      ],
+      "id": "51070544-03c9-4452-9d54-b9d5703b9f39",
+      "name": "3_Upload_To_Drive1",
+      "retryOnFail": true,
+      "credentials": {
+        "googleDriveOAuth2Api": {
+          "id": "EBWQKCdB4QPURN5P",
+          "name": "Justin's Google Drive"
+        }
+      },
+      "onError": "continueRegularOutput",
+      "notes": "Uploads PDF to Drive for archival"
+    },
+    {
+      "parameters": {
+        "model": {
+          "__rl": true,
+          "value": "gpt-4o-mini",
+          "mode": "list",
+          "cachedResultName": "gpt-4o-mini"
+        },
+        "options": {
+          "temperature": 0,
+          "timeout": 60000
+        }
+      },
+      "type": "@n8n/n8n-nodes-langchain.lmChatOpenAi",
+      "typeVersion": 1.2,
+      "position": [
+        672,
+        1872
+      ],
+      "id": "e32b27c1-c7e2-4aad-ba70-22d8698b0a19",
+      "name": "OpenAI Chat Model3",
+      "credentials": {
+        "openAiApi": {
+          "id": "0J7bcq4sg2rjYwNM",
+          "name": "OpenAi account"
+        }
+      }
+    }
+  ],
+  "pinData": {},
+  "connections": {
+    "Gmail Trigger": {
+      "main": [
+        [
+          {
+            "node": "2_Extract_PDF_Attachment1",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "4_Download_From_Drive": {
+      "main": [
+        [
+          {
+            "node": "5_Convert_To_Base64",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "5_Convert_To_Base64": {
+      "main": [
+        [
+          {
+            "node": "6_Vision_API_OCR",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "6_Vision_API_OCR": {
+      "main": [
+        [
+          {
+            "node": "7_Parse_OCR_Text",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "7_Parse_OCR_Text": {
+      "main": [
+        [
+          {
+            "node": "8_AI_Extract_Invoice_Fields",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "8_AI_Extract_Invoice_Fields": {
+      "main": [
+        [
+          {
+            "node": "9_Format_For_Sheets",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "9_Format_For_Sheets": {
+      "main": [
+        [
+          {
+            "node": "10_Check_Extraction_Success",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "10_Check_Extraction_Success": {
+      "main": [
+        [
+          {
+            "node": "11_Append_To_Transactions",
+            "type": "main",
+            "index": 0
+          }
+        ],
+        [
+          {
+            "node": "13_Move_To_Failed",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "11_Append_To_Transactions": {
+      "main": [
+        [
+          {
+            "node": "12_Move_To_Processed",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "13_Move_To_Failed": {
+      "main": [
+        [
+          {
+            "node": "14_Log_Failed_Invoice",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "14_Log_Failed_Invoice": {
+      "main": [
+        [
+          {
+            "node": "15_Send_Failure_Alert",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "2_Extract_PDF_Attachment1": {
+      "main": [
+        [
+          {
+            "node": "3_Upload_To_Drive1",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "3_Upload_To_Drive1": {
+      "main": [
+        [
+          {
+            "node": "4_Download_From_Drive",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "OpenAI Chat Model3": {
+      "ai_languageModel": [
+        [
+          {
+            "node": "8_AI_Extract_Invoice_Fields",
+            "type": "ai_languageModel",
+            "index": 0
+          }
+        ]
+      ]
+    }
+  },
+  "active": false,
+  "settings": {
+    "executionOrder": "v1"
+  },
+  "versionId": "7ed50aca-c7aa-4c9a-a6a8-b5a5a950a7af",
+  "meta": {
+    "templateCredsSetupCompleted": true,
+    "instanceId": "a3683a745f363d5955049e67674d4631d96e1cd0c49b7a8645fb83a7aea0f8d6"
+  },
+  "id": "2phwuSi1ZP9vzxdP",
+  "tags": []
+}
