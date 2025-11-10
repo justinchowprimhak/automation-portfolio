@@ -1,10 +1,10 @@
 # Automation Portfolio
 Portfolio of automation projects built with n8n, Pipedream, AWS, and Python. Focused on process optimisation and workflow architecture.
 
-## 🔧 Tech Stack
+## Tech Stack
 n8n, Pipedream (JavaScript), AWS (Lambda, S3, API Gateway), Python, Playwright, REST/JSON APIs
 
-## 🚀 Featured Projects
+## Featured Projects
 ### 1. AI Sales Automation
 - Automated lead qualification and follow-ups via Telegram and OpenAI API.
 - Reduced lead response time by **90%**, increased qualified lead volume by **60%**.
